@@ -8,10 +8,10 @@ cmake_minimum_required(VERSION 3.4.1)
 # Creates and names a library, sets it as either STATIC
 # or SHARED, and provides the relative paths to its source code.
 # You can define multiple libraries, and CMake builds them for you.
-# Gradle automatically packages shared libraries with your APK.
+# Gradle automatically packages shared libraries with your APK.w
 
 add_library( # Sets the name of the library.
-        fooLib
+        encrypt
 
         # Sets the library as a shared library.
         SHARED
@@ -19,13 +19,9 @@ add_library( # Sets the name of the library.
         # Provides a relative path to your source file(s).
         aes.h
         aes.c
-        hex_utils.h
-        hex_utils.c
-        tools.h
-        tools.cpp
-        aes_utils.h
-        aes_utils.c
-        foo_tools.cpp
+        base64.c
+        base64.h
+        encrypt.cpp
         )
 
 # Searches for a specified prebuilt library and stores the path as a
@@ -46,7 +42,7 @@ find_library( # Sets the name of the path variable.
 # build script, prebuilt third-party libraries, or system libraries.
 
 target_link_libraries( # Specifies the target library.
-        fooLib
+        encrypt
 
         # Links the target library to the log library
         # included in the NDK.

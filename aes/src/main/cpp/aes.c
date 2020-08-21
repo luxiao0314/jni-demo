@@ -1,97 +1,43 @@
-/*
-
-This is an implementation of the AES algorithm, specifically ECB, CTR and CBC mode.
-Block size can be chosen in aes.h - available choices are AES128, AES192, AES256.
-
-The implementation is verified against the test vectors in:
-  National Institute of Standards and Technology Special Publication 800-38A 2001 ED
-
-ECB-AES128
-----------
-
-  plain-text:
-    6bc1bee22e409f96e93d7e117393172a
-    ae2d8a571e03ac9c9eb76fac45af8e51
-    30c81c46a35ce411e5fbc1191a0a52ef
-    f69f2445df4f9b17ad2b417be66c3710
-
-  key:
-    2b7e151628aed2a6abf7158809cf4f3c
-
-  resulting cipher
-    3ad77bb40d7a3660a89ecaf32466ef97 
-    f5d3d58503b9699de785895a96fdbaaf 
-    43b1cd7f598ece23881b00e3ed030688 
-    7b0c785e27e8ad3f8223207104725dd4 
-
-
-NOTE:   String length must be evenly divisible by 16byte (str_len % 16 == 0)
-        You should pad the end of the string with zeros if this is not the case.
-        For AES192/256 the key size is proportionally larger.
-
+/**
+* 文件描述: aes具体实现 支持CBC 跟EBC模式  使用PKCS7填充
+* 作者: Created by 向定权 on 2018/5/5
+* 版本号: v1.0    
+* 组织名称: swifts.com.cn
+* 包名: ${PACKAGE_NAME}
+* 项目名称: AES
+* 版权申明: 暂无
 */
 
-
-/*****************************************************************************/
-/* Includes:                                                                 */
-/*****************************************************************************/
-#include <stdint.h>
-#include <string.h> // CBC mode, for memset
 #include "aes.h"
-
-/*****************************************************************************/
-/* Defines:                                                                  */
-/*****************************************************************************/
-// The number of columns comprising a state in AES. This is a constant in AES. Value=4
+#include <android/log.h>
+// AES中state的列数,这个值固定为4
 #define Nb 4
-#define BLOCKLEN 16 // Block length in bytes AES is 128b block only
+// AES 分段的大小,这个值固定为16
+#define BLOCK_SIZE 16
 
-#if defined(AES256) && (AES256 == 1)
-#define Nk 8
-    #define KEYLEN 32
-    #define Nr 14
-    #define keyExpSize 240
-#elif defined(AES192) && (AES192 == 1)
-#define Nk 6
-    #define KEYLEN 24
-    #define Nr 12
-    #define keyExpSize 208
-#else
-#define Nk 4        // The number of 32 bit words in a key.
-#define KEYLEN 16   // Key length in bytes
-#define Nr 10       // The number of rounds in AES Cipher.
-#define keyExpSize 176
-#endif
-
-// jcallan@github points out that declaring Multiply as a function
-// reduces code size considerably with the Keil ARM compiler.
-// See this link for more information: https://github.com/kokke/tiny-AES-C/pull/3
 #ifndef MULTIPLY_AS_A_FUNCTION
-#define MULTIPLY_AS_A_FUNCTION 0
+#define MULTIPLY_AS_A_FUNCTION 1
 #endif
-
-
-/*****************************************************************************/
-/* Private variables:                                                        */
-/*****************************************************************************/
-// state - array holding the intermediate results during decryption.
 typedef uint8_t state_t[4][4];
-static state_t* state;
+//状态矩阵
+//volatile static  state_t *state;
+//轮密钥
+static uint8_t RoundKey[240];
+// 输入的密钥
+static const uint8_t *Key;
 
-// The array that stores the round keys.
-static uint8_t RoundKey[keyExpSize];
-
-// The Key input to the AES Program
-static const uint8_t* Key;
+//密钥长度（32位比特字)
+static char Nk;//aes128 为4
+//加密轮数
+static char Nr;//aes128 为10
+//密钥长度 （8位）
+static char KEYLEN;//aes128 为16
 
 #if defined(CBC) && CBC
-// Initial Vector used only for CBC mode
-static uint8_t* Iv;
+// 用于 CBC 模式的初始化向量
+static uint8_t *Iv;
 #endif
-
-// The lookup-tables are marked const so they can be placed in read-only storage instead of RAM
-// The numbers below can be computed dynamically trading ROM for RAM -
-// This can be useful in (embedded) bootloader applications, where ROM is often limited.
+//s 盒
 static const uint8_t sbox[256] = {
         //0     1    2      3     4    5     6     7      8    9     A      B    C     D     E     F
         0x63, 0x7c, 0x77, 0x7b, 0xf2, 0x6b, 0x6f, 0xc5, 0x30, 0x01, 0x67, 0x2b, 0xfe, 0xd7, 0xab, 0x76,
@@ -109,8 +55,9 @@ static const uint8_t sbox[256] = {
         0xba, 0x78, 0x25, 0x2e, 0x1c, 0xa6, 0xb4, 0xc6, 0xe8, 0xdd, 0x74, 0x1f, 0x4b, 0xbd, 0x8b, 0x8a,
         0x70, 0x3e, 0xb5, 0x66, 0x48, 0x03, 0xf6, 0x0e, 0x61, 0x35, 0x57, 0xb9, 0x86, 0xc1, 0x1d, 0x9e,
         0xe1, 0xf8, 0x98, 0x11, 0x69, 0xd9, 0x8e, 0x94, 0x9b, 0x1e, 0x87, 0xe9, 0xce, 0x55, 0x28, 0xdf,
-        0x8c, 0xa1, 0x89, 0x0d, 0xbf, 0xe6, 0x42, 0x68, 0x41, 0x99, 0x2d, 0x0f, 0xb0, 0x54, 0xbb, 0x16 };
-
+        0x8c, 0xa1, 0x89, 0x0d, 0xbf, 0xe6, 0x42, 0x68, 0x41, 0x99, 0x2d, 0x0f, 0xb0, 0x54, 0xbb, 0x16
+        };
+//s 盒逆
 static const uint8_t rsbox[256] = {
         0x52, 0x09, 0x6a, 0xd5, 0x30, 0x36, 0xa5, 0x38, 0xbf, 0x40, 0xa3, 0x9e, 0x81, 0xf3, 0xd7, 0xfb,
         0x7c, 0xe3, 0x39, 0x82, 0x9b, 0x2f, 0xff, 0x87, 0x34, 0x8e, 0x43, 0x44, 0xc4, 0xde, 0xe9, 0xcb,
@@ -127,199 +74,165 @@ static const uint8_t rsbox[256] = {
         0x1f, 0xdd, 0xa8, 0x33, 0x88, 0x07, 0xc7, 0x31, 0xb1, 0x12, 0x10, 0x59, 0x27, 0x80, 0xec, 0x5f,
         0x60, 0x51, 0x7f, 0xa9, 0x19, 0xb5, 0x4a, 0x0d, 0x2d, 0xe5, 0x7a, 0x9f, 0x93, 0xc9, 0x9c, 0xef,
         0xa0, 0xe0, 0x3b, 0x4d, 0xae, 0x2a, 0xf5, 0xb0, 0xc8, 0xeb, 0xbb, 0x3c, 0x83, 0x53, 0x99, 0x61,
-        0x17, 0x2b, 0x04, 0x7e, 0xba, 0x77, 0xd6, 0x26, 0xe1, 0x69, 0x14, 0x63, 0x55, 0x21, 0x0c, 0x7d };
+        0x17, 0x2b, 0x04, 0x7e, 0xba, 0x77, 0xd6, 0x26, 0xe1, 0x69, 0x14, 0x63, 0x55, 0x21, 0x0c, 0x7d
+        };
 
-// The round constant word array, Rcon[i], contains the values given by
-// x to the power (i-1) being powers of x (x is denoted as {02}) in the field GF(2^8)
-static const uint8_t Rcon[11] = {
-        0x8d, 0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80, 0x1b, 0x36 };
-
-/*
- * Jordan Goulder points out in PR #12 (https://github.com/kokke/tiny-AES-C/pull/12),
- * that you can remove most of the elements in the Rcon array, because they are unused.
- *
- * From Wikipedia's article on the Rijndael key schedule @ https://en.wikipedia.org/wiki/Rijndael_key_schedule#Rcon
- *
- * "Only the first some of these constants are actually used – up to rcon[10] for AES-128 (as 11 round keys are needed),
- *  up to rcon[8] for AES-192, up to rcon[7] for AES-256. rcon[0] is not used in AES algorithm."
- */
-
+// 轮常量
+static const uint8_t Rcon[15] = {0x8d, 0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80, 0x1b, 0x36,
+                                 0x6c, 0xd8, 0xab, 0x4d};
 
 /*****************************************************************************/
-/* Private functions:                                                        */
+/*内部函数                                                                    */
 /*****************************************************************************/
-static uint8_t getSBoxValue(uint8_t num)
-{
-  return sbox[num];
+
+//根据索引取值
+static uint8_t getSBoxValue(uint8_t num) {
+    return sbox[num];
 }
 
-static uint8_t getSBoxInvert(uint8_t num)
-{
-  return rsbox[num];
+//根据索引取值
+static uint8_t getSBoxInvert(uint8_t num) {
+    return rsbox[num];
 }
 
-// This function produces Nb(Nr+1) round keys. The round keys are used in each round to decrypt the states.
-static void KeyExpansion(void)
-{
-  uint32_t i, k;
-  uint8_t tempa[4]; // Used for the column/row operations
+// 通过密钥编排函数该密钥矩阵被扩展成一个44个字组成的序列W[0],W[1], … ,W[43],
+// 该序列的前4个元素W[0],W[1],W[2],W[3]是原始密钥，用于加密运算中的初始密钥加
+// 后面40个字分为10组，每组4个字（128比特）分别用于10轮加密运算中的轮密钥加
+static void KeyExpansion(void) {
+    uint32_t i, j, k;
+    uint8_t tempa[4];
 
-  // The first round key is the key itself.
-  for (i = 0; i < Nk; ++i)
-  {
-    RoundKey[(i * 4) + 0] = Key[(i * 4) + 0];
-    RoundKey[(i * 4) + 1] = Key[(i * 4) + 1];
-    RoundKey[(i * 4) + 2] = Key[(i * 4) + 2];
-    RoundKey[(i * 4) + 3] = Key[(i * 4) + 3];
-  }
+    Nk = KEYLEN / 4;
+    Nr = 6 + Nk;
 
-  // All other round keys are found from the previous round keys.
-  //i == Nk
-  for (; i < Nb * (Nr + 1); ++i)
-  {
-    {
-      tempa[0] = RoundKey[(i-1) * 4 + 0];
-      tempa[1] = RoundKey[(i-1) * 4 + 1];
-      tempa[2] = RoundKey[(i-1) * 4 + 2];
-      tempa[3] = RoundKey[(i-1) * 4 + 3];
+    // 第一轮为原始密钥
+    for (i = 0; i < Nk; ++i) {
+        RoundKey[(i * 4) + 0] = Key[(i * 4) + 0];
+        RoundKey[(i * 4) + 1] = Key[(i * 4) + 1];
+        RoundKey[(i * 4) + 2] = Key[(i * 4) + 2];
+        RoundKey[(i * 4) + 3] = Key[(i * 4) + 3];
     }
 
-    if (i % Nk == 0)
-    {
-      // This function shifts the 4 bytes in a word to the left once.
-      // [a0,a1,a2,a3] becomes [a1,a2,a3,a0]
-
-      // Function RotWord()
-      {
-        k = tempa[0];
-        tempa[0] = tempa[1];
-        tempa[1] = tempa[2];
-        tempa[2] = tempa[3];
-        tempa[3] = k;
-      }
-
-      // SubWord() is a function that takes a four-byte input word and
-      // applies the S-box to each of the four bytes to produce an output word.
-
-      // Function Subword()
-      {
-        tempa[0] = getSBoxValue(tempa[0]);
-        tempa[1] = getSBoxValue(tempa[1]);
-        tempa[2] = getSBoxValue(tempa[2]);
-        tempa[3] = getSBoxValue(tempa[3]);
-      }
-
-      tempa[0] =  tempa[0] ^ Rcon[i/Nk];
+    // 其他轮的密钥从前一轮获得
+    for (; (i < (Nb * (Nr + 1))); ++i) {
+        for (j = 0; j < 4; ++j) {
+            tempa[j] = RoundKey[(i - 1) * 4 + j];
+        }
+        if (i % Nk == 0) {
+            // [a0,a1,a2,a3] 变成 [a1,a2,a3,a0]
+            {
+                k = tempa[0];
+                tempa[0] = tempa[1];
+                tempa[1] = tempa[2];
+                tempa[2] = tempa[3];
+                tempa[3] = k;
+            }
+            //从s盒中取
+            {
+                tempa[0] = getSBoxValue(tempa[0]);
+                tempa[1] = getSBoxValue(tempa[1]);
+                tempa[2] = getSBoxValue(tempa[2]);
+                tempa[3] = getSBoxValue(tempa[3]);
+            }
+            //轮常量异或
+            tempa[0] = tempa[0] ^ Rcon[i / Nk];
+        } else if (Nk > 6 && i % Nk == 4) {
+            {
+                tempa[0] = getSBoxValue(tempa[0]);
+                tempa[1] = getSBoxValue(tempa[1]);
+                tempa[2] = getSBoxValue(tempa[2]);
+                tempa[3] = getSBoxValue(tempa[3]);
+            }
+        }
+        RoundKey[i * 4 + 0] = RoundKey[(i - Nk) * 4 + 0] ^ tempa[0];
+        RoundKey[i * 4 + 1] = RoundKey[(i - Nk) * 4 + 1] ^ tempa[1];
+        RoundKey[i * 4 + 2] = RoundKey[(i - Nk) * 4 + 2] ^ tempa[2];
+        RoundKey[i * 4 + 3] = RoundKey[(i - Nk) * 4 + 3] ^ tempa[3];
     }
-#if defined(AES256) && (AES256 == 1)
-    if (i % Nk == 4)
-    {
-      // Function Subword()
-      {
-        tempa[0] = getSBoxValue(tempa[0]);
-        tempa[1] = getSBoxValue(tempa[1]);
-        tempa[2] = getSBoxValue(tempa[2]);
-        tempa[3] = getSBoxValue(tempa[3]);
-      }
+}
+
+// 轮转密钥添加到状态矩阵
+static void AddRoundKey(uint8_t round, state_t *state) {
+    uint8_t i, j;
+    for (i = 0; i < 4; ++i) {
+        for (j = 0; j < 4; ++j) {
+            (*state)[i][j] ^= RoundKey[round * Nb * 4 + i * Nb + j];
+        }
     }
-#endif
-    RoundKey[i * 4 + 0] = RoundKey[(i - Nk) * 4 + 0] ^ tempa[0];
-    RoundKey[i * 4 + 1] = RoundKey[(i - Nk) * 4 + 1] ^ tempa[1];
-    RoundKey[i * 4 + 2] = RoundKey[(i - Nk) * 4 + 2] ^ tempa[2];
-    RoundKey[i * 4 + 3] = RoundKey[(i - Nk) * 4 + 3] ^ tempa[3];
-  }
 }
 
-// This function adds the round key to state.
-// The round key is added to the state by an XOR function.
-static void AddRoundKey(uint8_t round)
-{
-  uint8_t i,j;
-  for (i=0;i<4;++i)
-  {
-    for (j = 0; j < 4; ++j)
-    {
-      (*state)[i][j] ^= RoundKey[(round * Nb * 4) + (i * Nb) + j];
+// 字节代换 把该字节的高4位作为行值，低4位作为列值，取出S盒中对应的行的元素作为输出
+static void SubBytes(state_t *state) {
+    uint8_t i, j;
+    for (i = 0; i < 4; ++i) {
+        for (j = 0; j < 4; ++j) {
+            (*state)[j][i] = getSBoxValue((*state)[j][i]);
+        }
     }
-  }
 }
 
-// The SubBytes Function Substitutes the values in the
-// state matrix with values in an S-box.
-static void SubBytes(void)
-{
-  uint8_t i, j;
-  for (i = 0; i < 4; ++i)
-  {
-    for (j = 0; j < 4; ++j)
-    {
-      (*state)[j][i] = getSBoxValue((*state)[j][i]);
+// 行移位 是一个简单的左循环移位操作。当密钥长度为128比特时，状态矩阵的第0行左移0字节，第1行左移1字节，第2行左移2字节，第3行左移3字节，
+static void ShiftRows(state_t *state) {
+    uint8_t temp;
+
+    temp = (*state)[0][1];
+    (*state)[0][1] = (*state)[1][1];
+    (*state)[1][1] = (*state)[2][1];
+    (*state)[2][1] = (*state)[3][1];
+    (*state)[3][1] = temp;
+
+    temp = (*state)[0][2];
+    (*state)[0][2] = (*state)[2][2];
+    (*state)[2][2] = temp;
+
+    temp = (*state)[1][2];
+    (*state)[1][2] = (*state)[3][2];
+    (*state)[3][2] = temp;
+
+    temp = (*state)[0][3];
+    (*state)[0][3] = (*state)[3][3];
+    (*state)[3][3] = (*state)[2][3];
+    (*state)[2][3] = (*state)[1][3];
+    (*state)[1][3] = temp;
+}
+
+static uint8_t xtime(uint8_t x) {
+    return ((x << 1) ^ (((x >> 7) & 1) * 0x1b));
+}
+
+// 列混合变换是通过矩阵相乘来实现的，经行移位后的状态矩阵与固定的矩阵相乘，得到混淆后的状态矩阵
+static void MixColumns(state_t *state) {
+    uint8_t i;
+    uint8_t Tmp, Tm, t;
+    for (i = 0; i < 4; ++i) {
+        t = (*state)[i][0];
+        Tmp = (*state)[i][0] ^ (*state)[i][1] ^ (*state)[i][2] ^ (*state)[i][3];
+        Tm = (*state)[i][0] ^ (*state)[i][1];
+        Tm = xtime(Tm);
+        (*state)[i][0] ^= Tm ^ Tmp;
+        Tm = (*state)[i][1] ^ (*state)[i][2];
+        Tm = xtime(Tm);
+        (*state)[i][1] ^= Tm ^ Tmp;
+        Tm = (*state)[i][2] ^ (*state)[i][3];
+        Tm = xtime(Tm);
+        (*state)[i][2] ^= Tm ^ Tmp;
+        Tm = (*state)[i][3] ^ t;
+        Tm = xtime(Tm);
+        (*state)[i][3] ^= Tm ^ Tmp;
     }
-  }
 }
 
-// The ShiftRows() function shifts the rows in the state to the left.
-// Each row is shifted with different offset.
-// Offset = Row number. So the first row is not shifted.
-static void ShiftRows(void)
-{
-  uint8_t temp;
-
-  // Rotate first row 1 columns to left
-  temp           = (*state)[0][1];
-  (*state)[0][1] = (*state)[1][1];
-  (*state)[1][1] = (*state)[2][1];
-  (*state)[2][1] = (*state)[3][1];
-  (*state)[3][1] = temp;
-
-  // Rotate second row 2 columns to left
-  temp           = (*state)[0][2];
-  (*state)[0][2] = (*state)[2][2];
-  (*state)[2][2] = temp;
-
-  temp           = (*state)[1][2];
-  (*state)[1][2] = (*state)[3][2];
-  (*state)[3][2] = temp;
-
-  // Rotate third row 3 columns to left
-  temp           = (*state)[0][3];
-  (*state)[0][3] = (*state)[3][3];
-  (*state)[3][3] = (*state)[2][3];
-  (*state)[2][3] = (*state)[1][3];
-  (*state)[1][3] = temp;
-}
-
-static uint8_t xtime(uint8_t x)
-{
-  return ((x<<1) ^ (((x>>7) & 1) * 0x1b));
-}
-
-// MixColumns function mixes the columns of the state matrix
-static void MixColumns(void)
-{
-  uint8_t i;
-  uint8_t Tmp,Tm,t;
-  for (i = 0; i < 4; ++i)
-  {
-    t   = (*state)[i][0];
-    Tmp = (*state)[i][0] ^ (*state)[i][1] ^ (*state)[i][2] ^ (*state)[i][3] ;
-    Tm  = (*state)[i][0] ^ (*state)[i][1] ; Tm = xtime(Tm);  (*state)[i][0] ^= Tm ^ Tmp ;
-    Tm  = (*state)[i][1] ^ (*state)[i][2] ; Tm = xtime(Tm);  (*state)[i][1] ^= Tm ^ Tmp ;
-    Tm  = (*state)[i][2] ^ (*state)[i][3] ; Tm = xtime(Tm);  (*state)[i][2] ^= Tm ^ Tmp ;
-    Tm  = (*state)[i][3] ^ t ;              Tm = xtime(Tm);  (*state)[i][3] ^= Tm ^ Tmp ;
-  }
-}
-
-// Multiply is used to multiply numbers in the field GF(2^8)
+//乘法
 #if MULTIPLY_AS_A_FUNCTION
-static uint8_t Multiply(uint8_t x, uint8_t y)
-{
-  return (((y & 1) * x) ^
-       ((y>>1 & 1) * xtime(x)) ^
-       ((y>>2 & 1) * xtime(xtime(x))) ^
-       ((y>>3 & 1) * xtime(xtime(xtime(x)))) ^
-       ((y>>4 & 1) * xtime(xtime(xtime(xtime(x))))));
-  }
+
+static uint8_t Multiply(uint8_t x, uint8_t y) {
+    return (((y & 1) * x) ^
+            ((y >> 1 & 1) * xtime(x)) ^
+            ((y >> 2 & 1) * xtime(xtime(x))) ^
+            ((y >> 3 & 1) * xtime(xtime(xtime(x)))) ^
+            ((y >> 4 & 1) * xtime(xtime(xtime(xtime(x))))));
+}
+
 #else
 #define Multiply(x, y)                                \
       (  ((y & 1) * x) ^                              \
@@ -330,290 +243,372 @@ static uint8_t Multiply(uint8_t x, uint8_t y)
 
 #endif
 
-// MixColumns function mixes the columns of the state matrix.
-// The method used to multiply may be difficult to understand for the inexperienced.
-// Please use the references to gain more information.
-static void InvMixColumns(void)
-{
-  int i;
-  uint8_t a, b, c, d;
-  for (i = 0; i < 4; ++i)
-  {
-    a = (*state)[i][0];
-    b = (*state)[i][1];
-    c = (*state)[i][2];
-    d = (*state)[i][3];
-
-    (*state)[i][0] = Multiply(a, 0x0e) ^ Multiply(b, 0x0b) ^ Multiply(c, 0x0d) ^ Multiply(d, 0x09);
-    (*state)[i][1] = Multiply(a, 0x09) ^ Multiply(b, 0x0e) ^ Multiply(c, 0x0b) ^ Multiply(d, 0x0d);
-    (*state)[i][2] = Multiply(a, 0x0d) ^ Multiply(b, 0x09) ^ Multiply(c, 0x0e) ^ Multiply(d, 0x0b);
-    (*state)[i][3] = Multiply(a, 0x0b) ^ Multiply(b, 0x0d) ^ Multiply(c, 0x09) ^ Multiply(d, 0x0e);
-  }
-}
-
-
-// The SubBytes Function Substitutes the values in the
-// state matrix with values in an S-box.
-static void InvSubBytes(void)
-{
-  uint8_t i,j;
-  for (i = 0; i < 4; ++i)
-  {
-    for (j = 0; j < 4; ++j)
-    {
-      (*state)[j][i] = getSBoxInvert((*state)[j][i]);
+//列混合
+static void InvMixColumns(state_t *state) {
+    int i;
+    uint8_t a, b, c, d;
+    for (i = 0; i < 4; ++i) {
+        a = (*state)[i][0];
+        b = (*state)[i][1];
+        c = (*state)[i][2];
+        d = (*state)[i][3];
+        (*state)[i][0] =
+                Multiply(a, 0x0e) ^ Multiply(b, 0x0b) ^ Multiply(c, 0x0d) ^ Multiply(d, 0x09);
+        (*state)[i][1] =
+                Multiply(a, 0x09) ^ Multiply(b, 0x0e) ^ Multiply(c, 0x0b) ^ Multiply(d, 0x0d);
+        (*state)[i][2] =
+                Multiply(a, 0x0d) ^ Multiply(b, 0x09) ^ Multiply(c, 0x0e) ^ Multiply(d, 0x0b);
+        (*state)[i][3] =
+                Multiply(a, 0x0b) ^ Multiply(b, 0x0d) ^ Multiply(c, 0x09) ^ Multiply(d, 0x0e);
     }
-  }
 }
 
-static void InvShiftRows(void)
-{
-  uint8_t temp;
-
-  // Rotate first row 1 columns to right
-  temp = (*state)[3][1];
-  (*state)[3][1] = (*state)[2][1];
-  (*state)[2][1] = (*state)[1][1];
-  (*state)[1][1] = (*state)[0][1];
-  (*state)[0][1] = temp;
-
-  // Rotate second row 2 columns to right
-  temp = (*state)[0][2];
-  (*state)[0][2] = (*state)[2][2];
-  (*state)[2][2] = temp;
-
-  temp = (*state)[1][2];
-  (*state)[1][2] = (*state)[3][2];
-  (*state)[3][2] = temp;
-
-  // Rotate third row 3 columns to right
-  temp = (*state)[0][3];
-  (*state)[0][3] = (*state)[1][3];
-  (*state)[1][3] = (*state)[2][3];
-  (*state)[2][3] = (*state)[3][3];
-  (*state)[3][3] = temp;
-}
-
-
-// Cipher is the main function that encrypts the PlainText.
-static void Cipher(void)
-{
-  uint8_t round = 0;
-
-  // Add the First round key to the state before starting the rounds.
-  AddRoundKey(0);
-
-  // There will be Nr rounds.
-  // The first Nr-1 rounds are identical.
-  // These Nr-1 rounds are executed in the loop below.
-  for (round = 1; round < Nr; ++round)
-  {
-    SubBytes();
-    ShiftRows();
-    MixColumns();
-    AddRoundKey(round);
-  }
-
-  // The last round is given below.
-  // The MixColumns function is not here in the last round.
-  SubBytes();
-  ShiftRows();
-  AddRoundKey(Nr);
-}
-
-static void InvCipher(void)
-{
-  uint8_t round=0;
-
-  // Add the First round key to the state before starting the rounds.
-  AddRoundKey(Nr);
-
-  // There will be Nr rounds.
-  // The first Nr-1 rounds are identical.
-  // These Nr-1 rounds are executed in the loop below.
-  for (round = (Nr - 1); round > 0; --round)
-  {
-    InvShiftRows();
-    InvSubBytes();
-    AddRoundKey(round);
-    InvMixColumns();
-  }
-
-  // The last round is given below.
-  // The MixColumns function is not here in the last round.
-  InvShiftRows();
-  InvSubBytes();
-  AddRoundKey(0);
-}
-
-
-/*****************************************************************************/
-/* Public functions:                                                         */
-/*****************************************************************************/
-#if defined(ECB) && (ECB == 1)
-
-
-void AES_ECB_encrypt(const uint8_t* input, const uint8_t* key, uint8_t* output, const uint32_t length)
-{
-  // Copy input to output, and work in-memory on output
-  memcpy(output, input, length);
-  state = (state_t*)output;
-
-  Key = key;
-  KeyExpansion();
-
-  // The next function call encrypts the PlainText with the Key using AES algorithm.
-  Cipher();
-}
-
-void AES_ECB_decrypt(const uint8_t* input, const uint8_t* key, uint8_t *output, const uint32_t length)
-{
-  // Copy input to output, and work in-memory on output
-  memcpy(output, input, length);
-  state = (state_t*)output;
-
-  // The KeyExpansion routine must be called before encryption.
-  Key = key;
-  KeyExpansion();
-
-  InvCipher();
-}
-
-
-#endif // #if defined(ECB) && (ECB == 1)
-
-
-
-
-
-#if defined(CBC) && (CBC == 1)
-
-
-static void XorWithIv(uint8_t* buf)
-{
-  uint8_t i;
-  for (i = 0; i < BLOCKLEN; ++i) //WAS for(i = 0; i < KEYLEN; ++i) but the block in AES is always 128bit so 16 bytes!
-  {
-    buf[i] ^= Iv[i];
-  }
-}
-
-void AES_CBC_encrypt_buffer(uint8_t* output, uint8_t* input, uint32_t length, const uint8_t* key, const uint8_t* iv)
-{
-  uintptr_t i;
-  uint8_t extra = length % BLOCKLEN; /* Remaining bytes in the last non-full block */
-
-  // Skip the key expansion if key is passed as 0
-  if (0 != key)
-  {
-    Key = key;
-    KeyExpansion();
-  }
-
-  if (iv != 0)
-  {
-    Iv = (uint8_t*)iv;
-  }
-
-  for (i = 0; i < length; i += BLOCKLEN)
-  {
-    memcpy(output, input, BLOCKLEN);
-    XorWithIv(output);
-    state = (state_t*)output;
-    Cipher();
-    Iv = output;
-    input += BLOCKLEN;
-    output += BLOCKLEN;
-    //printf("Step %d - %d", i/16, i);
-  }
-
-  if (extra)
-  {
-    memcpy(output, input, extra);
-    memset((output + extra), 0, (BLOCKLEN - extra));
-    XorWithIv(output);
-    state = (state_t*)output;
-    Cipher();
-  }
-}
-
-void AES_CBC_decrypt_buffer(uint8_t* output, uint8_t* input, uint32_t length, const uint8_t* key, const uint8_t* iv)
-{
-  uintptr_t i;
-  uint8_t extra = length % BLOCKLEN; /* Remaining bytes in the last non-full block */
-
-  // Skip the key expansion if key is passed as 0
-  if (0 != key)
-  {
-    Key = key;
-    KeyExpansion();
-  }
-
-  // If iv is passed as 0, we continue to encrypt without re-setting the Iv
-  if (iv != 0)
-  {
-    Iv = (uint8_t*)iv;
-  }
-
-  for (i = 0; i < length; i += BLOCKLEN)
-  {
-    memcpy(output, input, BLOCKLEN);
-    state = (state_t*)output;
-    InvCipher();
-    XorWithIv(output);
-    Iv = input;
-    input += BLOCKLEN;
-    output += BLOCKLEN;
-  }
-
-  if (extra)
-  {
-    memcpy(output, input, extra);
-    state = (state_t*)output;
-    InvCipher();
-  }
-}
-
-#endif // #if defined(CBC) && (CBC == 1)
-
-
-
-#if defined(CTR) && (CTR == 1)
-
-/* Symmetrical operation: same function for encrypting as for decrypting. Note any IV/nonce should never be reused with the same key */
-void AES_CTR_xcrypt_buffer(uint8_t* output, uint8_t* input, uint32_t length, const uint8_t* key, const uint8_t* nonce)
-{
-  uint8_t buffer[BLOCKLEN], counter[BLOCKLEN];
-
-  memcpy(counter, nonce, BLOCKLEN);
-  Key = key;
-  KeyExpansion();
-
-  int j;
-  unsigned i;
-  for (i = 0; i < length; ++i)
-  {
-    if ((i & (BLOCKLEN - 1)) == 0)
-    {
-      memcpy(buffer, counter, BLOCKLEN);
-      state = (state_t*)buffer;
-      Cipher();
-
-      /* Increment counter and handle overflow */
-      for (j = (BLOCKLEN - 1); j >= 0; --j)
-      {
-        counter[j] += 1;
-
-        /* Break if no overflow, keep going otherwise */
-        if (counter[j] != 0)
-        {
-          break;
+////s逆盒字节代换
+static void InvSubBytes(state_t *state) {
+    uint8_t i, j;
+    for (i = 0; i < 4; ++i) {
+        for (j = 0; j < 4; ++j) {
+            (*state)[j][i] = getSBoxInvert((*state)[j][i]);
         }
-      }
     }
-
-    output[i] = (input[i] ^ buffer[(i & (BLOCKLEN - 1))]);
-  }
 }
 
-#endif // #if defined(CTR) && (CTR == 1)
+//行移位解密过程  右移
+static void InvShiftRows(state_t *state) {
+    uint8_t temp;
+    temp = (*state)[3][1];
+    (*state)[3][1] = (*state)[2][1];
+    (*state)[2][1] = (*state)[1][1];
+    (*state)[1][1] = (*state)[0][1];
+    (*state)[0][1] = temp;
+
+    temp = (*state)[0][2];
+    (*state)[0][2] = (*state)[2][2];
+    (*state)[2][2] = temp;
+
+    temp = (*state)[1][2];
+    (*state)[1][2] = (*state)[3][2];
+    (*state)[3][2] = temp;
+
+    temp = (*state)[0][3];
+    (*state)[0][3] = (*state)[1][3];
+    (*state)[1][3] = (*state)[2][3];
+    (*state)[2][3] = (*state)[3][3];
+    (*state)[3][3] = temp;
+}
+
+
+// Cipher 是加密明文的主要函数
+static void Cipher(state_t *state) {
+    uint8_t round = 0;
+    AddRoundKey(0, state);
+
+    for (round = 1; round < Nr; ++round) {
+        SubBytes(state);//字节代换
+        ShiftRows(state);//行移位
+        MixColumns(state);//列混合
+        AddRoundKey(round, state);//轮密钥加
+    }
+    //最后一轮不执行列混合
+    SubBytes(state);
+    ShiftRows(state);
+    AddRoundKey(Nr, state);
+}
+
+//解密的主函数 即加密的逆过程
+static void InvCipher(state_t *state) {
+    uint8_t round = 0;
+
+    AddRoundKey(Nr, state);
+
+    for (round = Nr - 1; round > 0; round--) {
+        InvShiftRows(state);//行移位
+        InvSubBytes(state);//s逆盒字节代换
+        AddRoundKey(round, state);//轮密钥加
+        InvMixColumns(state);//列混合
+    }
+    InvShiftRows(state);
+    InvSubBytes(state);
+    AddRoundKey(0, state);
+}
+
+//分段块的复制
+static void BlockCopy(uint8_t *output, const uint8_t *input) {
+    uint8_t i;
+    for (i = 0; i < BLOCK_SIZE; ++i) {
+        output[i] = input[i];
+    }
+}
+
+/*****************************************************************************/
+/* 对外提供的函数                                                              */
+/*****************************************************************************/
+
+static inline int *findPaddingIndex(uint8_t *str, size_t length) {
+    static int result[] = {-1, -1}, i, k;
+    for (i = 0; i < length; ++i) {
+        char c = str[length - i];
+        if ('\0' != c) {
+            result[0] = i;
+            for (k = 0; k < BLOCK_SIZE; ++k) {
+                if (HEX[k] == c) {
+                    if (0 == k) {
+                        k = BLOCK_SIZE;
+                    }
+                    result[1] = k;
+                    return result;
+                }
+            }
+            return result;
+        }
+    }
+}
+
+//对字符串（也就是待加密的字符串）进行pkcs7填充
+static inline uint8_t *getPKCS7PaddingInput(const char *in) {
+    int inLength = (int) strlen(in);//输入的长度
+    int remainder = inLength % BLOCK_SIZE;
+    uint8_t *paddingInput;
+    int group = inLength / BLOCK_SIZE;
+    int size = BLOCK_SIZE * (group + 1);
+    paddingInput = (uint8_t *) malloc(size + 1);
+
+    int dif = size - inLength;
+    for (int i = 0; i < size; i++) {
+        if (i < inLength) {
+            paddingInput[i] = in[i];
+        } else {
+            if (remainder == 0) {
+                //刚好是16倍数,就填充16个16
+                paddingInput[i] = HEX[0];
+            } else {    //如果不足16位 少多少位就补几个几  如：少4为就补4个4 以此类推
+                paddingInput[i] = HEX[dif];
+            }
+        }
+    }
+    paddingInput[size] = '\0';
+    return paddingInput;
+}
+
+//进行pkcs7移除操作
+static inline void removePKCS7Padding(uint8_t *out, const size_t inputLength) {
+    int *result = findPaddingIndex(out, inputLength - 1);
+    int offSetIndex = result[0];
+    int lastChar = result[1];
+    //检查是不是padding的字符,然后去掉
+    const size_t noZeroIndex = inputLength - offSetIndex;
+    if (lastChar >= 0 && offSetIndex >= 0) {
+        int success = 1;
+        for (int i = 0; i < lastChar; ++i) {
+            size_t index = noZeroIndex - lastChar + i;
+            if (!HEX[lastChar] == out[index]) {
+                success = 0;
+            }
+        }
+        if (1 == success) {
+            out[noZeroIndex - lastChar] = '\0';
+            memset(out + noZeroIndex - lastChar + 1, 0, lastChar - 1);
+        }
+    } else {
+        out[noZeroIndex] = '\0';
+    }
+}
+
+#if defined(ECB) && ECB
+
+/*****************************************************************************/
+/*                         ECB模式                                            */
+/*****************************************************************************/
+
+//分段加密 结果输出到output中
+static inline void
+AES_ECB_encrypt(const uint8_t *input, const uint8_t *key, uint8_t *output, state_t *state) {
+    // 复制 并且后续在output上进行操作
+    BlockCopy(output, input);
+    state = (state_t *) output;
+    if (Key != key) {
+        Key = key;
+        KeyExpansion();//进行密钥拓展 生成10轮的轮转密钥 进行加密
+    }
+    //调用AES进行加密
+    Cipher(state);
+}
+
+//分段解密 结果输出到output中
+static inline void
+AES_ECB_decrypt(const uint8_t *input, const uint8_t *key, uint8_t *output, state_t *state) {
+    BlockCopy(output, input);
+    state = (state_t *) output;
+    if (Key != key) {
+        Key = key;
+        KeyExpansion();
+    }
+    InvCipher(state);
+}
+
+/**
+ * 不定长加密,pkcs7padding，根据密钥长度自动选择128、192、256算法
+ */
+char *AES_ECB_PKCS7_Encrypt(const char *in, const uint8_t *key) {
+    state_t *state = NULL;
+    KEYLEN = strlen(key);//获取key的长度（字符串 不包括'\0'）
+    uint8_t *paddingInput = getPKCS7PaddingInput(in);//填充
+    int paddingInputLengt = strlen(paddingInput);
+    int count = paddingInputLengt / BLOCK_SIZE;//分段数
+    //开始分段加密
+    char *out = (char *) malloc(paddingInputLengt);
+    for (int i = 0; i < count; ++i) {
+        AES_ECB_encrypt(paddingInput + i * BLOCK_SIZE, key, out + i * BLOCK_SIZE, state);//执行具体分段加密
+    }
+    char *base64En = b64_encode(out, paddingInputLengt);//转base64编码
+    free(paddingInput);
+    free(out);
+    return base64En;//返回结果
+}
+
+/**
+ * 不定长解密,pkcs7padding，根据密钥长度自动选择128、192、256算法
+ */
+const char *AES_ECB_PKCS7_Decrypt(const char *in, const uint8_t *key) {
+    state_t *state = NULL;
+    KEYLEN = strlen(key);
+    size_t len = strlen(in);
+    size_t inputLength = 0;
+    uint8_t *inputDesBase64 = b64_decode_ex(in, len, &inputLength);//首先进行base64解码
+    volatile uint8_t *out = malloc(inputLength);
+    memset(out, 0, inputLength);
+    size_t count = inputLength / BLOCK_SIZE;
+    if (count <= 0) {
+        count = 1;
+    }
+    //分段解密
+    for (size_t i = 0; i < count; ++i) {
+        AES_ECB_decrypt(inputDesBase64 + i * BLOCK_SIZE, key, out + i * BLOCK_SIZE, state);
+    }
+    //移除填充
+    removePKCS7Padding(out, inputLength);
+    free(inputDesBase64);
+    return (const char *) out;
+}
+
+#endif // #if defined(ECB) && ECB
+
+/*****************************************************************************/
+/*                         CBC模式                                            */
+/*****************************************************************************/
+
+#if defined(CBC) && CBC
+
+static void XorWithIv(uint8_t *buf) {
+    uint8_t i;
+    for (i = 0; i < BLOCK_SIZE; ++i) {
+        buf[i] ^= Iv[i];
+    }
+}
+
+void AES_CBC_encrypt(uint8_t *output, uint8_t *input, uint32_t length, const uint8_t *key,
+                     const uint8_t *iv, state_t *state) {
+    uintptr_t i;
+    uint8_t remainders = length % BLOCK_SIZE;
+
+    BlockCopy(output, input);
+    state = (state_t *) output;
+
+    if (0 != key) {
+        Key = key;
+        KeyExpansion();
+    }
+
+    if (iv != 0) {
+        Iv = (uint8_t *) iv;
+    }
+
+    for (i = 0; i < length; i += BLOCK_SIZE) {
+        XorWithIv(input);
+        BlockCopy(output, input);
+        state = (state_t *) output;
+        Cipher(state);
+        Iv = output;
+        input += BLOCK_SIZE;
+        output += BLOCK_SIZE;
+    }
+
+    if (remainders) {
+        BlockCopy(output, input);
+        memset(output + remainders, 0, BLOCK_SIZE - remainders);
+        state = (state_t *) output;
+        Cipher(state);
+    }
+}
+
+void AES_CBC_decrypt(uint8_t *output, uint8_t *input, uint32_t length, const uint8_t *key,
+                     const uint8_t *iv, state_t *state) {
+    uintptr_t i;
+    uint8_t remainders = length % BLOCK_SIZE;
+
+    BlockCopy(output, input);
+    state = (state_t *) output;
+
+    if (0 != key) {
+        Key = key;
+        KeyExpansion();
+    }
+
+    if (iv != 0) {
+        Iv = (uint8_t *) iv;
+    }
+
+    for (i = 0; i < length; i += BLOCK_SIZE) {
+        BlockCopy(output, input);
+        state = (state_t *) output;
+        InvCipher(state);
+        XorWithIv(output);
+        Iv = input;
+        input += BLOCK_SIZE;
+        output += BLOCK_SIZE;
+    }
+
+    if (remainders) {
+        BlockCopy(output, input);
+        memset(output + remainders, 0, BLOCK_SIZE - remainders);
+        state = (state_t *) output;
+        InvCipher(state);
+    }
+}
+
+/**
+ * 不定长加密,pkcs7padding，根据密钥长度自动选择128、192、256算法
+ */
+char *AES_CBC_PKCS7_Encrypt(const char *in, const uint8_t *key, const uint8_t *iv) {
+    KEYLEN = strlen(key);
+    state_t *state = NULL;
+    uint8_t *paddingInput = getPKCS7PaddingInput(in);
+    int paddingInputLengt = strlen(paddingInput);
+    char *out = (char *) malloc(paddingInputLengt);
+    AES_CBC_encrypt(out, paddingInput, paddingInputLengt, key, iv, state);
+    char *base64En = b64_encode(out, paddingInputLengt);
+    free(paddingInput);
+    free(out);
+    return base64En;
+}
+
+/**
+ * 不定长解密,pkcs7padding，根据密钥长度自动选择128、192、256算法
+ */
+char *AES_CBC_PKCS7_Decrypt(const char *in, const uint8_t *key, const uint8_t *iv) {
+    KEYLEN = strlen(key);
+    state_t *state = NULL;
+    size_t len = strlen(in);
+    size_t inputLength = 0;
+    uint8_t *inputDesBase64 = b64_decode_ex(in, len, &inputLength);//首先进行base64解码
+    uint8_t *out = malloc(inputLength);
+    memset(out, 0, inputLength);
+    AES_CBC_decrypt(out, inputDesBase64, inputLength, key, iv, state);
+
+    removePKCS7Padding(out, inputLength);
+    free(inputDesBase64);
+    return (char *) out;
+}
+
+#endif // #if defined(CBC) && CBC
+

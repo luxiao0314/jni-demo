@@ -1,16 +1,27 @@
-#ifndef _AES_H_
-#define _AES_H_
+/**
+* 文件描述: AES加密头文件
+* 作者: Created by 向定权 on 2018/5/5
+* 版本号: v1.0    
+* 组织名称: swifts.com.cn
+* 包名: ${PACKAGE_NAME}
+* 项目名称: AES
+* 版权申明: 暂无
+*/
+#ifndef AES_AES_H
+#define AES_AES_H
 
 #include <stdint.h>
+#include <string.h>
+#include <stdlib.h>
+#include "base64.h"
 
+/*****************************************************************************/
+/*                         宏定义                                             */
+/*****************************************************************************/
 
-// #define the macros below to 1/0 to enable/disable the mode of operation.
-//
-// CBC enables AES encryption in CBC-mode of operation.
-// CTR enables encryption in counter-mode.
-// ECB enables the basic ECB 16-byte block algorithm. All can be enabled simultaneously.
-
-// The #ifndef-guard allows it to be configured before #include'ing or at compile time.
+/**
+ * 将宏定义为1/0，以启用/禁用 CBC/ECB 加密模式。
+ */
 #ifndef CBC
 #define CBC 1
 #endif
@@ -19,44 +30,34 @@
 #define ECB 1
 #endif
 
-#ifndef CTR
-#define CTR 1
+static const unsigned char HEX[16] = {0x10, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09,
+                                      0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f};
+
+
+#ifdef __cplusplus
+extern "C" {
 #endif
 
+#if defined(ECB) && ECB
 
-#define AES_ECB_encrypt         qqppqp
-#define AES_ECB_decrypt         qqppqq
-#define AES_CBC_encrypt_buffer  qpppqp
-#define AES_CBC_decrypt_buffer  qqqpqp
-#define AES_CTR_xcrypt_buffer   qppqqp
+char *AES_ECB_PKCS7_Encrypt(const char *in, const uint8_t *key);
 
+const  char *AES_ECB_PKCS7_Decrypt(const char *in, const uint8_t *key);
 
-#define AES128 1
-//#define AES192 1
-//#define AES256 1
-
-#if defined(ECB) && (ECB == 1)
-
-void AES_ECB_encrypt(const uint8_t* input, const uint8_t* key, uint8_t *output, const uint32_t length);
-void AES_ECB_decrypt(const uint8_t* input, const uint8_t* key, uint8_t *output, const uint32_t length);
-
-#endif // #if defined(ECB) && (ECB == !)
+#endif // #if defined(ECB) && ECB
 
 
-#if defined(CBC) && (CBC == 1)
+#if defined(CBC) && CBC
 
-void AES_CBC_encrypt_buffer(uint8_t* output, uint8_t* input, uint32_t length, const uint8_t* key, const uint8_t* iv);
-void AES_CBC_decrypt_buffer(uint8_t* output, uint8_t* input, uint32_t length, const uint8_t* key, const uint8_t* iv);
+char *AES_CBC_PKCS7_Encrypt(const char *in, const uint8_t *key, const uint8_t *iv);
 
-#endif // #if defined(CBC) && (CBC == 1)
+char *AES_CBC_PKCS7_Decrypt(const char *in, const uint8_t *key, const uint8_t *iv);
 
-
-#if defined(CTR) && (CTR == 1)
-
-/* Same function for encrypting as for decrypting. Note no IV/nonce should ever be reused with the same key */
-void AES_CTR_xcrypt_buffer(uint8_t* output, uint8_t* input, uint32_t length, const uint8_t* key, const uint8_t* nonce);
-
-#endif // #if defined(CTR) && (CTR == 1)
+#endif // #if defined(CBC) && CBC
 
 
-#endif //_AES_H_
+#ifdef __cplusplus
+}
+#endif
+
+#endif //AES_AES_H
